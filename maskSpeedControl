@@ -1,0 +1,120 @@
+import cv2 as cv
+import numpy as np
+import os
+import time
+import picar
+from picar import front_wheels, back_wheels
+from picar.SunFounder_PCA9685 import Servo
+
+# Setup ruedas
+picar.setup()
+bw = back_wheels.Back_Wheels()
+fw = front_wheels.Front_Wheels()
+MIDDLE_TOLERANT = 5
+FW_ANGLE_MAX    = 135
+FW_ANGLE_MIN    = 0
+FW_STRAIGHT     = 75
+
+# Valores iniciales carrito
+bw.speed = 0
+fw.turn(FW_STRAIGHT)
+motor_speed = 50 #45,50 ok
+obstacle_count = 0
+flag = False
+moving = True
+
+# Controlador proporcional
+kp = 0.8		# 0.8 ok
+
+# Variables para funcion centroide
+imgwidth =  600 - 50
+imgheight = 230 - 50
+
+# Abrir camara
+cap = cv.VideoCapture(0)
+cap.set(3 , 640) # width        
+cap.set(4 , 480) # height       
+cap.set(10, 115) # brightness     min: 0   , max: 255 , increment:1  
+cap.set(11, 73) # contrast       min: 0   , max: 255 , increment:1     
+cap.set(12, 129) # saturation     min: 0   , max: 255 , increment:1
+cap.set(13, 0) # hue         
+cap.set(14, 0) # gain           min: 0   , max: 127 , increment:1
+cap.set(15, 1) # exposure       min: -7  , max: -1  , increment:1
+cap.set(17, 4500) # white_balance  min: 4000, max: 7000, increment:1
+cap.set(28, 0) # focus          min: 0   , max: 255 , increment:5
+
+# Funcion para encontrar el centroide basado en lo negro
+def find_centroid(bw_im):
+    global imgheight
+    global imgwidth
+    xFinal = 0
+    for y in range(1, imgheight, 5):
+        xProm = 0; N = 0
+        for x in range(1, imgwidth, 5):
+            tile = bw_im[y, x]
+            # Ahora buscamos pi­xeles NEGROS
+            if tile == 0:
+                xProm += x
+                N += 1
+        if N > 0:
+            xProm = int(xProm / N)
+        xFinal += xProm
+    xFinal = int(xFinal / (imgheight / 5))
+    # Marcar centroide en video
+    cv.circle(bw_im, (xFinal, imgheight // 2), 4, (0, 0, 255), 2)
+    return xFinal
+
+def movement(xFinal):
+    error = (600-50)/2 - xFinal
+    fw_angle= FW_STRAIGHT - int((error)*kp)
+    if xFinal == 0:
+        fw_angle = FW_ANGLE_MIN
+        #bajar vel
+        motor_speed = 35
+        bw.speed = motor_speed
+        fw.turn(fw_angle)
+
+        return 0, fw_angle
+    if error > 100:
+        motor_speed = 30
+    else:
+        motor_speed = 50
+    bw.speed = motor_speed
+    if fw_angle<FW_ANGLE_MIN:
+        fw_angle=FW_ANGLE_MIN
+    if fw_angle>FW_ANGLE_MAX:
+        fw_angle=FW_ANGLE_MAX
+    fw.turn(fw_angle)
+    return error, fw_angle
+
+
+while(True):
+    success, im = cap.read()
+    im = im[50:230, 70:620]
+    im = cv.bilateralFilter(im, 5, 100, 100)
+    im = cv.cvtColor(im, cv.COLOR_BGR2HSV)
+
+    # Rango para negro en HSV
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([109, 61, 197])  # El valor V bajo para captar negro
+
+    # Creamos la mÃ¡scara: negro = negro (0), lo demÃ¡s = blanco (255)
+    bw_im = cv.inRange(im, lower_black, upper_black)
+
+    # Manda a llamar funcion centroide (ahora sobre lo negro)
+    xF = find_centroid(bw_im)
+    err, angle = movement(xF)
+    imsh = cv.resize(bw_im, (275, 75))
+    cv.imshow("1", imsh)
+    
+    if cv.waitKey(1) & 0xFF == ord('q') or moving == False:
+        if moving == False:
+            fw.turn(72)
+            time.sleep(1)
+        else:
+            pass
+        motor_speed = 0; bw.speed = 0;
+        break
+
+cap.release()
+cv.destroyAllWindows()
